@@ -1,5 +1,9 @@
 packages:
-- "." # for changesets
-- frontend
-- backend
-- utils
+  - "." # for changesets
+  - frontend
+  - backend
+  - utils
+allowBuilds:
+  cpu-features: true
+  esbuild: true
+  ssh2: true
