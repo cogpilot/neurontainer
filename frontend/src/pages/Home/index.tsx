@@ -92,6 +92,13 @@ interface AdaptiveStatus {
 	}>
 }
 
+function formatAdaptiveNicheSummary(niches: AdaptiveStatus['niches']): string {
+	const summary = Object.entries(niches).map(([n, v]) =>
+		`${n}: ${v.successRate.toFixed(2)} sr, ${v.divergence.toFixed(2)} div${v.canary ? ' [canary]' : ''}`,
+	);
+	return summary.join(' | ') || 'none';
+}
+
 export function Home() {
 	const [websocketUrl, setWebsocketUrl] = useState('ws://host.docker.internal:8000');
 	const [backendStatus, setBackendStatus] = useState<any>(null);
@@ -341,7 +348,7 @@ export function Home() {
 						<TextField
 							label="WebSocket URL"
 							value={websocketUrl}
-							onChange={(e) => setWebsocketUrl((e.target as HTMLInputElement).value)}
+							onChange={(e) => setWebsocketUrl(e.target.value)}
 							fullWidth
 							placeholder="ws://localhost:8000"
 							helperText="Tip: use ws://host.docker.internal:8000 to reach a Neuro server running on your host (inside the extension container, ws://localhost points to itself)."
@@ -393,7 +400,7 @@ export function Home() {
 							<br />
 							Update budget: {adaptiveStatus.gauge.updateBudgetUsedLastMinute}/{adaptiveStatus.controls.updateBudgetPerMinute} per minute
 							<br />
-							Niches: {Object.entries(adaptiveStatus.niches).map(([n, v]) => `${n}: ${v.successRate.toFixed(2)} sr, ${v.divergence.toFixed(2)} div${v.canary ? ' [canary]' : ''}`).join(' | ') || 'none'}
+							Niches: {formatAdaptiveNicheSummary(adaptiveStatus.niches)}
 						</Alert>
 					)}
 					<Stack spacing={2}>
@@ -401,7 +408,7 @@ export function Home() {
 							select
 							label="Adaptive phase"
 							value={adaptivePhase}
-							onChange={(e) => setAdaptivePhase((e.target as HTMLInputElement).value as AdaptivePhase)}
+							onChange={(e) => setAdaptivePhase(e.target.value as AdaptivePhase)}
 							disabled={adaptivePhaseLoading}
 							fullWidth
 						>

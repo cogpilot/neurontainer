@@ -1,7 +1,18 @@
+import { randomUUID } from 'node:crypto'
+
 type SkillVector = {
     localNicheCompiler: number
     globalGaugeTransformer: number
 }
+
+const INITIAL_TEACHER_CONFIDENCE_SCORE = 0.55
+const INITIAL_STUDENT_SKILL = 0.5
+const INITIAL_ECHO_TRACE = 0.5
+const ECHO_DECAY_RATE = 0.92
+const ECHO_UPDATE_RATE = 0.08
+const NOVELTY_BOOST_MULTIPLIER = 1.25
+const MAX_CHECKPOINTS = 20
+const GLOBAL_DIVERGENCE_CAP = 0.5
 
 type NicheAdaptiveState = {
     teacher: SkillVector
@@ -135,8 +146,7 @@ export class AdaptiveTrainerSystem {
         this.createCheckpoint('bootstrap')
     }
 
-    public evaluateAction(actionName: string): AdaptivePolicyDecision {
-        const niche = this.resolveNiche(actionName)
+    public evaluateAction(actionName: string, niche = this.resolveNiche(actionName)): AdaptivePolicyDecision {
         const state = this.ensureNiche(niche)
         const teacherConfidence = average([
             state.teacher.localNicheCompiler,
@@ -228,16 +238,16 @@ export class AdaptiveTrainerSystem {
         const target = interaction.success ? 1 : 0
         const novelty = clamp01(Math.abs(state.echoTrace - target))
         state.novelty = novelty
-        state.echoTrace = clamp01((state.echoTrace * 0.92) + (target * 0.08))
+        state.echoTrace = clamp01((state.echoTrace * ECHO_DECAY_RATE) + (target * ECHO_UPDATE_RATE))
 
-        const noveltyBoost = novelty > this.controls.noveltyThreshold ? 1.25 : 1
+        const noveltyBoost = novelty > this.controls.noveltyThreshold ? NOVELTY_BOOST_MULTIPLIER : 1
         const studentRate = this.controls.studentRate * noveltyBoost
         const teacherRate = this.controls.teacherRate
 
         state.student.localNicheCompiler = this.nextSkill(state.student.localNicheCompiler, target, studentRate)
         state.student.globalGaugeTransformer = this.nextSkill(
             state.student.globalGaugeTransformer,
-            target * (1 - Math.min(0.5, state.divergence)),
+            target * (1 - Math.min(GLOBAL_DIVERGENCE_CAP, state.divergence)),
             studentRate,
         )
 
@@ -309,7 +319,7 @@ export class AdaptiveTrainerSystem {
 
     public createCheckpoint(label?: string): { id: string; label?: string; createdAt: number } {
         const snapshot: Snapshot = {
-            id: `${now()}-${Math.random().toString(16).slice(2, 8)}`,
+            id: randomUUID(),
             label,
             createdAt: now(),
             controls: {
@@ -332,7 +342,7 @@ export class AdaptiveTrainerSystem {
         }
 
         this.checkpoints.unshift(snapshot)
-        this.checkpoints = this.checkpoints.slice(0, 20)
+        this.checkpoints = this.checkpoints.slice(0, MAX_CHECKPOINTS)
         return { id: snapshot.id, label: snapshot.label, createdAt: snapshot.createdAt }
     }
 
@@ -376,14 +386,14 @@ export class AdaptiveTrainerSystem {
         if (existing) return existing
         const seeded: NicheAdaptiveState = {
             teacher: {
-                localNicheCompiler: 0.55,
-                globalGaugeTransformer: 0.55,
+                localNicheCompiler: INITIAL_TEACHER_CONFIDENCE_SCORE,
+                globalGaugeTransformer: INITIAL_TEACHER_CONFIDENCE_SCORE,
             },
             student: {
-                localNicheCompiler: 0.5,
-                globalGaugeTransformer: 0.5,
+                localNicheCompiler: INITIAL_STUDENT_SKILL,
+                globalGaugeTransformer: INITIAL_STUDENT_SKILL,
             },
-            echoTrace: 0.5,
+            echoTrace: INITIAL_ECHO_TRACE,
             novelty: 0,
             interactions: 0,
             successes: 0,
@@ -400,9 +410,12 @@ export class AdaptiveTrainerSystem {
 
     private pruneUpdateWindow(): void {
         const minuteAgo = now() - 60_000
-        while (this.updateTimestamps.length && this.updateTimestamps[0] < minuteAgo) {
-            this.updateTimestamps.shift()
+        const firstInRangeIdx = this.updateTimestamps.findIndex((ts) => ts >= minuteAgo)
+        if (firstInRangeIdx === -1) {
+            this.updateTimestamps = []
+            return
         }
+        if (firstInRangeIdx > 0) this.updateTimestamps = this.updateTimestamps.slice(firstInRangeIdx)
     }
 
     private isUpdateBudgetExceeded(): boolean {
@@ -422,4 +435,3 @@ export class AdaptiveTrainerSystem {
         this.gauge.coherence = clamp01(1 - average(divergences))
     }
 }
-

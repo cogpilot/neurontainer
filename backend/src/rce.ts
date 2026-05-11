@@ -37,7 +37,7 @@ export async function RCEActionHandler(actionData: ActionData): Promise<void> {
             return;
         }
 
-        const adaptiveDecision = ADAPT.evaluateAction(actionData.name)
+        const adaptiveDecision = ADAPT.evaluateAction(actionData.name, adaptiveNiche)
         adaptiveNiche = adaptiveDecision.niche
         if (!adaptiveDecision.allow) {
             const mode = adaptiveDecision.enforced ? 'enforced' : 'shadow'
