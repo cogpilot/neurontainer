@@ -8,7 +8,8 @@ import {
 	TextField,
 	Stack,
 	CircularProgress,
-	Alert
+	Alert,
+	MenuItem
 } from '@mui/material';
 import { createDockerDesktopClient } from '@docker/extension-api-client';
 import './style.css';
@@ -58,19 +59,78 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 	}
 }
 
+type AdaptivePhase = 'offline_simulation' | 'shadow' | 'constrained_action' | 'gradual_autonomy'
+
+interface AdaptiveStatus {
+	controls: {
+		phase: AdaptivePhase
+		couplingStrength: number
+		teacherRate: number
+		studentRate: number
+		updateBudgetPerMinute: number
+		divergenceThreshold: number
+		noveltyThreshold: number
+		canaryNiches: string[]
+	}
+	gauge: {
+		coherence: number
+		drift: number
+		couplingStrength: number
+		totalInteractions: number
+		updateBudgetUsedLastMinute: number
+	}
+	checkpoints: Array<{ id: string; label?: string; createdAt: number }>
+	niches: Record<string, {
+		interactions: number
+		successRate: number
+		divergence: number
+		echoTrace: number
+		novelty: number
+		canary: boolean
+		teacher: { localNicheCompiler: number; globalGaugeTransformer: number }
+		student: { localNicheCompiler: number; globalGaugeTransformer: number }
+	}>
+}
+
 export function Home() {
 	const [websocketUrl, setWebsocketUrl] = useState('ws://host.docker.internal:8000');
 	const [backendStatus, setBackendStatus] = useState<any>(null);
+	const [adaptiveStatus, setAdaptiveStatus] = useState<AdaptiveStatus | null>(null);
+	const [adaptivePhase, setAdaptivePhase] = useState<AdaptivePhase>('shadow');
 	const [neuroLoading, setNeuroLoading] = useState(false);
 	const [dockerLoading, setDockerLoading] = useState(false);
+	const [adaptiveLoading, setAdaptiveLoading] = useState(false);
+	const [adaptivePhaseLoading, setAdaptivePhaseLoading] = useState(false);
+	const [adaptiveCheckpointLoading, setAdaptiveCheckpointLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
 	const [lastReconnectRaw, setLastReconnectRaw] = useState<string | null>(null);
 
+	const refreshAdaptive = async () => {
+		try {
+			if (!ddClient) return;
+			setAdaptiveLoading(true);
+			const raw = await ddClient.extension.vm.service.get('/api/adaptive/status');
+			const response = normalizeResponse(raw) as any;
+			if (response?.success && response?.status) {
+				setAdaptiveStatus(response.status as AdaptiveStatus);
+				const nextPhase = (response.status as AdaptiveStatus).controls?.phase;
+				if (nextPhase) setAdaptivePhase(nextPhase);
+			}
+		} catch {
+			// ignore
+		} finally {
+			setAdaptiveLoading(false);
+		}
+	};
+
 	const refreshStatus = async () => {
 		try {
 			if (!ddClient) return;
-			const status = await ddClient.extension.vm.service.get('/api/status');
+			const [status] = await Promise.all([
+				ddClient.extension.vm.service.get('/api/status'),
+				refreshAdaptive(),
+			]);
 			setBackendStatus(status);
 			// Prefer backend's current URL if present.
 			if ((status as any)?.neuro_server) setWebsocketUrl((status as any).neuro_server);
@@ -82,6 +142,71 @@ export function Home() {
 	useEffect(() => {
 		refreshStatus();
 	}, []);
+
+	const handleAdaptivePhaseSave = async () => {
+		try {
+			if (!ddClient) throw new Error('Docker Desktop extension API client is unavailable');
+			setAdaptivePhaseLoading(true);
+			setError(null);
+			const raw = await withTimeout(
+				ddClient.extension.vm.service.put('/api/adaptive/controls', { controls: { phase: adaptivePhase } }) as any,
+				15000,
+				'Adaptive control update',
+			);
+			const response = normalizeResponse(raw) as any;
+			if (!response?.success) throw new Error(response?.error || 'Failed to update adaptive phase');
+			setSuccess(`Adaptive phase updated to "${adaptivePhase}"`);
+			await refreshAdaptive();
+		} catch (err) {
+			setError(`Failed to update adaptive phase.\n\n${stringifyAny(err)}`);
+		} finally {
+			setAdaptivePhaseLoading(false);
+		}
+	};
+
+	const handleAdaptiveCheckpoint = async () => {
+		try {
+			if (!ddClient) throw new Error('Docker Desktop extension API client is unavailable');
+			setAdaptiveCheckpointLoading(true);
+			setError(null);
+			const raw = await withTimeout(
+				ddClient.extension.vm.service.post('/api/adaptive/checkpoint', { label: 'manual' }) as any,
+				15000,
+				'Adaptive checkpoint creation',
+			);
+			const response = normalizeResponse(raw) as any;
+			if (!response?.success) throw new Error(response?.error || 'Failed to create checkpoint');
+			setSuccess(`Adaptive checkpoint created (${response?.checkpoint?.id ?? 'unknown id'})`);
+			await refreshAdaptive();
+		} catch (err) {
+			setError(`Failed to create adaptive checkpoint.\n\n${stringifyAny(err)}`);
+		} finally {
+			setAdaptiveCheckpointLoading(false);
+		}
+	};
+
+	const handleAdaptiveRollbackLatest = async () => {
+		try {
+			if (!ddClient) throw new Error('Docker Desktop extension API client is unavailable');
+			const latestCheckpointId = adaptiveStatus?.checkpoints?.[0]?.id;
+			if (!latestCheckpointId) throw new Error('No adaptive checkpoint is available');
+			setAdaptiveCheckpointLoading(true);
+			setError(null);
+			const raw = await withTimeout(
+				ddClient.extension.vm.service.post('/api/adaptive/rollback', { checkpointId: latestCheckpointId }) as any,
+				15000,
+				'Adaptive rollback',
+			);
+			const response = normalizeResponse(raw) as any;
+			if (!response?.success) throw new Error(response?.error || 'Failed to rollback checkpoint');
+			setSuccess(`Rolled back adaptive state to checkpoint ${latestCheckpointId}`);
+			await refreshAdaptive();
+		} catch (err) {
+			setError(`Failed to rollback adaptive state.\n\n${stringifyAny(err)}`);
+		} finally {
+			setAdaptiveCheckpointLoading(false);
+		}
+	};
 
 	const handleReconnect = async () => {
 		try {
@@ -250,6 +375,73 @@ export function Home() {
 							size="large"
 						>
 							Refresh backend status
+						</Button>
+					</Stack>
+				</CardContent>
+			</Card>
+			<Card sx={{ mt: 2 }}>
+				<CardContent>
+					<Typography variant="h6" gutterBottom>
+						Adaptive Trainer (Teacher + Student)
+					</Typography>
+					<Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+						Local niche compiler + global gauge transformer status, rollout phase controls, and checkpoint rollback.
+					</Typography>
+					{adaptiveStatus && (
+						<Alert severity="info" sx={{ mb: 2 }}>
+							Phase: <strong>{adaptiveStatus.controls.phase}</strong> — Coherence: {adaptiveStatus.gauge.coherence.toFixed(3)} — Drift: {adaptiveStatus.gauge.drift.toFixed(3)} — Interactions: {adaptiveStatus.gauge.totalInteractions}
+							<br />
+							Update budget: {adaptiveStatus.gauge.updateBudgetUsedLastMinute}/{adaptiveStatus.controls.updateBudgetPerMinute} per minute
+							<br />
+							Niches: {Object.entries(adaptiveStatus.niches).map(([n, v]) => `${n}: ${v.successRate.toFixed(2)} sr, ${v.divergence.toFixed(2)} div${v.canary ? ' [canary]' : ''}`).join(' | ') || 'none'}
+						</Alert>
+					)}
+					<Stack spacing={2}>
+						<TextField
+							select
+							label="Adaptive phase"
+							value={adaptivePhase}
+							onChange={(e) => setAdaptivePhase((e.target as HTMLInputElement).value as AdaptivePhase)}
+							disabled={adaptivePhaseLoading}
+							fullWidth
+						>
+							<MenuItem value="offline_simulation">offline_simulation</MenuItem>
+							<MenuItem value="shadow">shadow</MenuItem>
+							<MenuItem value="constrained_action">constrained_action</MenuItem>
+							<MenuItem value="gradual_autonomy">gradual_autonomy</MenuItem>
+						</TextField>
+						<Button
+							variant="contained"
+							onClick={handleAdaptivePhaseSave}
+							disabled={adaptivePhaseLoading}
+							fullWidth
+						>
+							{adaptivePhaseLoading ? <CircularProgress size={24} /> : 'Apply adaptive phase'}
+						</Button>
+						<Button
+							variant="outlined"
+							onClick={handleAdaptiveCheckpoint}
+							disabled={adaptiveCheckpointLoading}
+							fullWidth
+						>
+							{adaptiveCheckpointLoading ? <CircularProgress size={24} /> : 'Create checkpoint'}
+						</Button>
+						<Button
+							variant="outlined"
+							color="warning"
+							onClick={handleAdaptiveRollbackLatest}
+							disabled={adaptiveCheckpointLoading || !adaptiveStatus?.checkpoints?.length}
+							fullWidth
+						>
+							{adaptiveCheckpointLoading ? <CircularProgress size={24} /> : 'Rollback latest checkpoint'}
+						</Button>
+						<Button
+							variant="outlined"
+							onClick={refreshAdaptive}
+							disabled={adaptiveLoading || adaptivePhaseLoading || adaptiveCheckpointLoading}
+							fullWidth
+						>
+							{adaptiveLoading ? <CircularProgress size={24} /> : 'Refresh adaptive status'}
 						</Button>
 					</Stack>
 				</CardContent>
