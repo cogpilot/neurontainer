@@ -7,6 +7,7 @@ import { logger } from './utils'
 import { RCEActionHandler } from './rce'
 import { actions } from './functions'
 import { PermissionLevel } from './types/rce'
+import { ADAPT } from './adaptive'
 import {
   normalizeConfig,
   readConfig,
@@ -126,9 +127,61 @@ app.get('/api/status', (c) => {
     last_neuro_event: CONT.lastNeuroEvent,
     last_reconnect_request: CONT.lastReconnectRequest,
     docker_host: process.env.DOCKER_HOST || 'unset',
-    docker_socket_exists: CONT.docker ? true : false
+    docker_socket_exists: CONT.docker ? true : false,
+    adaptive_phase: ADAPT.getStatus().controls.phase,
+    adaptive_coherence: ADAPT.getStatus().gauge.coherence
   })
 });
+
+app.get('/api/adaptive/status', (c) => {
+  return c.json({
+    success: true,
+    status: ADAPT.getStatus(),
+  })
+})
+
+app.put('/api/adaptive/controls', async (c) => {
+  try {
+    const body = await c.req.json()
+    const controls = ADAPT.updateControls(body?.controls ?? {})
+    return c.json({ success: true, controls })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to update adaptive controls'
+    logger.error('Error updating adaptive controls:', error)
+    return c.json({ success: false, error: message }, 500)
+  }
+})
+
+app.post('/api/adaptive/checkpoint', async (c) => {
+  try {
+    const body = await c.req.json()
+    const checkpoint = ADAPT.createCheckpoint(body?.label)
+    return c.json({ success: true, checkpoint })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create adaptive checkpoint'
+    logger.error('Error creating adaptive checkpoint:', error)
+    return c.json({ success: false, error: message }, 500)
+  }
+})
+
+app.post('/api/adaptive/rollback', async (c) => {
+  try {
+    const body = await c.req.json()
+    const checkpointId = body?.checkpointId
+    if (!checkpointId || typeof checkpointId !== 'string') {
+      return c.json({ success: false, error: 'checkpointId is required' }, 400)
+    }
+    const rolledBack = ADAPT.rollback(checkpointId)
+    if (!rolledBack) {
+      return c.json({ success: false, error: `Checkpoint not found: ${checkpointId}` }, 404)
+    }
+    return c.json({ success: true, status: ADAPT.getStatus() })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to rollback adaptive checkpoint'
+    logger.error('Error rolling back adaptive checkpoint:', error)
+    return c.json({ success: false, error: message }, 500)
+  }
+})
 
 app.get('/api/ping', (c) => {
   return c.json({

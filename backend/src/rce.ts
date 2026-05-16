@@ -5,6 +5,7 @@ import { validate } from "jsonschema";
 import { readConfig } from "./config/permissions";
 import { CONFIG_PATH } from "./config/paths";
 import { PermissionLevel as PermLevel } from "./types/rce";
+import { ADAPT } from "./adaptive";
 
 export async function RCEActionHandler(actionData: ActionData): Promise<void> {
     console.log(`Received action from Neuro: ${actionData.name}`, actionData.params);
@@ -20,6 +21,10 @@ export async function RCEActionHandler(actionData: ActionData): Promise<void> {
         return;
     };
 
+    const startedAt = Date.now()
+    let adaptiveNiche = ADAPT.resolveNiche(actionData.name)
+    let actionSucceeded = false
+
     // Permission backup: even if an action is still registered for any reason,
     // refuse execution if the persisted permissions disable it.
     try {
@@ -30,6 +35,16 @@ export async function RCEActionHandler(actionData: ActionData): Promise<void> {
             CONT.logger.warn(msg)
             CONT.neuro.sendActionResult(actionData.id, false, msg)
             return;
+        }
+
+        const adaptiveDecision = ADAPT.evaluateAction(actionData.name, adaptiveNiche)
+        adaptiveNiche = adaptiveDecision.niche
+        if (!adaptiveDecision.allow) {
+            const mode = adaptiveDecision.enforced ? 'enforced' : 'shadow'
+            const msg = `Action "${actionData.name}" blocked by adaptive policy (${mode}): ${adaptiveDecision.reason}`
+            CONT.logger.warn(msg)
+            CONT.neuro.sendActionResult(actionData.id, false, msg)
+            return
         }
     } catch (err) {
         CONT.logger.error('Permission check failed:', err)
@@ -67,10 +82,18 @@ export async function RCEActionHandler(actionData: ActionData): Promise<void> {
 
     try {
         const actionResult: ActionResult = await action.handler(actionData);
+        actionSucceeded = actionResult.success
         if (!actionResult.success) CONT.logger.error(`Action ${actionData.name} failed! Full reason: ${actionResult.message}`)
         CONT.neuro.sendContext(actionResult.success ? actionResult.message : `Action failed: ${actionResult.message}`, actionResult.silent);
     } catch (erm) {
         CONT.neuro.sendContext(`Action threw an exception during execution! ${ERROR_MSG_REFERENCE}`)
+    } finally {
+        ADAPT.recordInteraction({
+            actionName: actionData.name,
+            niche: adaptiveNiche,
+            success: actionSucceeded,
+            latencyMs: Date.now() - startedAt,
+        })
     }
     return;
 }
