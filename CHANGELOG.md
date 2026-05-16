@@ -1,5 +1,16 @@
 # neurontainer
 
+## 1.1.0
+
+### Minor Changes
+
+- 199274a: make container parameter mandatory
+- 199274a: add default permission levels
+
+### Patch Changes
+
+- 199274a: forgot to add the cookie action
+
 ## 1.0.4
 
 ### Patch Changes
